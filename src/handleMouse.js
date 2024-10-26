@@ -18,7 +18,6 @@ export const createMouseHandlers = ({
   pressedKeys,
   pencilSize,
   setCaptureArea,
-  resetIdleTimer,
   isDrawing,
   setIsDrawing
 }) => {
@@ -70,7 +69,6 @@ export const createMouseHandlers = ({
     }
 
     setIsDrawing(true);
-    resetIdleTimer();
 
     if (tool === "capture") {
       const id = elements.length;
@@ -152,7 +150,6 @@ export const createMouseHandlers = ({
     if (action === "drawing") {
       const index = elements.length - 1;
       const { x1, y1 } = elements[index];
-      resetIdleTimer();
       
       if (tool === "capture") {
         const element = elements[index];
@@ -220,7 +217,6 @@ export const createMouseHandlers = ({
 
     if (action === "drawing") {
       console.log("Hoàn thành một nét vẽ");
-      resetIdleTimer();
     }
 
     if (action === "writing") return;

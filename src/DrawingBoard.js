@@ -19,7 +19,8 @@ const DrawingBoard = ({
   handleMouseMove,
   handleMouseUp,
   handleBlur,
-  captureDrawnArea
+  captureDrawnArea,
+  handleDetectRegions
 }) => {
   const textAreaRef = React.useRef(null);
 
@@ -74,12 +75,15 @@ const DrawingBoard = ({
         <label htmlFor="eraser">Eraser</label>
 
         {elements.length > 0 && (
+          <div>
           <button 
             onClick={captureDrawnArea}
             style={{ marginLeft: '10px' }}
           >
             Capture Drawn Area
           </button>
+                <button onClick={handleDetectRegions}>Detect Regions</button>
+            </div>
         )}
       </div>
 
