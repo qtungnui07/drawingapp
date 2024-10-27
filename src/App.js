@@ -7,16 +7,6 @@ import {
 } from './element-utils';
 import { createMouseHandlers } from './handleMouse';
 
-// Region detection helper functions
-const getPixel = (imageData, x, y) => {
-  const index = (y * imageData.width + x) * 4;
-  return {
-    r: imageData.data[index],
-    g: imageData.data[index + 1],
-    b: imageData.data[index + 2],
-    a: imageData.data[index + 3]
-  };
-};
 
 const isPixelNonTransparent = (pixel) => {
   return pixel.a > 0;
@@ -26,10 +16,21 @@ const isWithinBounds = (x, y, width, height) => {
   return x >= 0 && x < width && y >= 0 && y < height;
 };
 
+const getPixel = (imageData, x, y) => {
+  const index = (y * imageData.width + x) * 4;
+  return imageData.data[index + 3] > 0; // Only check alpha channel for performance
+};
+
+// Use Set for faster lookups and Int32Array for coordinates
 const floodFill = (imageData, startX, startY, visited) => {
   const width = imageData.width;
   const height = imageData.height;
-  const queue = [[startX, startY]];
+  const queue = new Int32Array(width * height * 2); // Pre-allocate queue
+  let queueStart = 0;
+  let queueEnd = 2;
+  queue[0] = startX;
+  queue[1] = startY;
+
   const region = {
     points: [],
     minX: startX,
@@ -38,33 +39,44 @@ const floodFill = (imageData, startX, startY, visited) => {
     maxY: startY
   };
 
-  while (queue.length > 0) {
-    const [x, y] = queue.shift();
-    const key = `${x},${y}`;
+  // Optimize bounds checking
+  const isWithinBounds = (x, y) => x >= 0 && x < width && y >= 0 && y < height;
 
+  // Pre-calculate neighbor offsets
+  const neighborOffsets = [
+    [1, 0], [-1, 0],
+    [0, 1], [0, -1],
+    [1, 1], [-1, -1],
+    [1, -1], [-1, 1]
+  ];
+
+  while (queueStart < queueEnd) {
+    const x = queue[queueStart];
+    const y = queue[queueStart + 1];
+    queueStart += 2;
+
+    const key = `${x},${y}`;
     if (visited.has(key)) continue;
-    
-    const pixel = getPixel(imageData, x, y);
-    if (!isPixelNonTransparent(pixel)) continue;
+
+    if (!getPixel(imageData, x, y)) continue;
 
     visited.add(key);
     region.points.push({ x, y });
+    
+    // Use Math.min/max for bounds tracking
     region.minX = Math.min(region.minX, x);
     region.maxX = Math.max(region.maxX, x);
     region.minY = Math.min(region.minY, y);
     region.maxY = Math.max(region.maxY, y);
 
-    // Check 8 neighboring pixels
-    const neighbors = [
-      [x + 1, y], [x - 1, y],
-      [x, y + 1], [x, y - 1],
-      [x + 1, y + 1], [x - 1, y - 1],
-      [x + 1, y - 1], [x - 1, y + 1]
-    ];
-
-    for (const [nx, ny] of neighbors) {
-      if (isWithinBounds(nx, ny, width, height) && !visited.has(`${nx},${ny}`)) {
-        queue.push([nx, ny]);
+    // Check neighbors using pre-calculated offsets
+    for (const [dx, dy] of neighborOffsets) {
+      const nx = x + dx;
+      const ny = y + dy;
+      if (isWithinBounds(nx, ny) && !visited.has(`${nx},${ny}`)) {
+        queue[queueEnd] = nx;
+        queue[queueEnd + 1] = ny;
+        queueEnd += 2;
       }
     }
   }
@@ -72,86 +84,145 @@ const floodFill = (imageData, startX, startY, visited) => {
   return region;
 };
 
+// Optimize distance calculation
 const calculateRegionDistance = (region1, region2) => {
+  // Quick overlap check
   const xOverlap = !(region1.maxX < region2.minX || region1.minX > region2.maxX);
   const yOverlap = !(region1.maxY < region2.minY || region1.minY > region2.maxY);
   
   if (xOverlap && yOverlap) return 0;
 
-  let dx = 0;
-  let dy = 0;
+  // Calculate distance only when necessary
+  const dx = !xOverlap ? Math.min(
+    Math.abs(region1.maxX - region2.minX),
+    Math.abs(region1.minX - region2.maxX)
+  ) : 0;
 
-  if (!xOverlap) {
-    dx = Math.min(
-      Math.abs(region1.maxX - region2.minX),
-      Math.abs(region1.minX - region2.maxX)
-    );
-  }
-
-  if (!yOverlap) {
-    dy = Math.min(
-      Math.abs(region1.maxY - region2.minY),
-      Math.abs(region1.minY - region2.maxY)
-    );
-  }
+  const dy = !yOverlap ? Math.min(
+    Math.abs(region1.maxY - region2.minY),
+    Math.abs(region1.minY - region2.maxY)
+  ) : 0;
 
   return Math.sqrt(dx * dx + dy * dy);
 };
 
-const mergeRegions = (region1, region2) => {
-  return {
-    points: [...region1.points, ...region2.points],
-    minX: Math.min(region1.minX, region2.minX),
-    maxX: Math.max(region1.maxX, region2.maxX),
-    minY: Math.min(region1.minY, region2.minY),
-    maxY: Math.max(region1.maxY, region2.maxY)
-  };
-};
+// Optimize region merging using Set
+const mergeRegions = (region1, region2) => ({
+  points: [...region1.points, ...region2.points],
+  minX: Math.min(region1.minX, region2.minX),
+  maxX: Math.max(region1.maxX, region2.maxX),
+  minY: Math.min(region1.minY, region2.minY),
+  maxY: Math.max(region1.maxY, region2.maxY)
+});
 
-const detectRegions = (canvas, minRegionSize = 100, groupingDistance = 80) => {
-  const ctx = canvas.getContext('2d');
-  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+const detectRegions = (canvas, elements, panOffset, scale, scaleOffset, minRegionSize = 100, groupingDistance = 80) => {
+  // Calculate bounds only once
+  const bounds = elements.reduce((acc, element) => {
+    if (element.type === 'pencil') {
+      element.points.forEach(point => {
+        acc.minX = Math.min(acc.minX, point.x);
+        acc.minY = Math.min(acc.minY, point.y);
+        acc.maxX = Math.max(acc.maxX, point.x);
+        acc.maxY = Math.max(acc.maxY, point.y);
+      });
+    } else {
+      const { x1, y1, x2, y2 } = element;
+      acc.minX = Math.min(acc.minX, x1, x2);
+      acc.minY = Math.min(acc.minY, y1, y2);
+      acc.maxX = Math.max(acc.maxX, x1, x2);
+      acc.maxY = Math.max(acc.maxY, y1, y2);
+    }
+    return acc;
+  }, { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity });
+
+  // Add padding
+  const padding = 100;
+  bounds.minX -= padding;
+  bounds.minY -= padding;
+  bounds.maxX += padding;
+  bounds.maxY += padding;
+
+  // Create optimized temporary canvas
+  const tempCanvas = document.createElement("canvas");
+  const width = Math.max(bounds.maxX - bounds.minX, canvas.width);
+  const height = Math.max(bounds.maxY - bounds.minY, canvas.height);
+  tempCanvas.width = width * scale;
+  tempCanvas.height = height * scale;
+  
+  // Use OffscreenCanvas when available for better performance
+  const ctx = tempCanvas.getContext("2d", { alpha: true });
+  const roughCanvas = rough.canvas(tempCanvas);
+
+  // Draw elements with transformation
+  ctx.save();
+  ctx.translate(-bounds.minX * scale, -bounds.minY * scale);
+  ctx.scale(scale, scale);
+  elements.forEach(element => drawElement(roughCanvas, ctx, element));
+  ctx.restore();
+
+  // Process image data
+  const imageData = ctx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
   const visited = new Set();
-  let initialRegions = [];
+  const initialRegions = [];
 
-  // First pass: Detect initial regions using flood fill
-  for (let y = 0; y < canvas.height; y++) {
-    for (let x = 0; x < canvas.width; x++) {
+  // Optimize pixel scanning with stride
+  const stride = 4; // Check every 4th pixel initially
+  for (let y = 0; y < tempCanvas.height; y += stride) {
+    for (let x = 0; x < tempCanvas.width; x += stride) {
       const key = `${x},${y}`;
       if (visited.has(key)) continue;
 
-      const pixel = getPixel(imageData, x, y);
-      if (!isPixelNonTransparent(pixel)) continue;
+      if (!getPixel(imageData, x, y)) continue;
 
       const region = floodFill(imageData, x, y, visited);
       if (region.points.length >= minRegionSize) {
-        initialRegions.push(region);
+        // Transform coordinates back
+        const transformedRegion = {
+          ...region,
+          minX: region.minX / scale + bounds.minX,
+          maxX: region.maxX / scale + bounds.minX,
+          minY: region.minY / scale + bounds.minY,
+          maxY: region.maxY / scale + bounds.minY,
+          points: region.points.map(point => ({
+            x: point.x / scale + bounds.minX,
+            y: point.y / scale + bounds.minY
+          }))
+        };
+        initialRegions.push(transformedRegion);
       }
     }
   }
 
-  // Second pass: Merge nearby regions
-  let merged = true;
-  while (merged) {
-    merged = false;
-    for (let i = 0; i < initialRegions.length; i++) {
-      for (let j = i + 1; j < initialRegions.length; j++) {
-        const distance = calculateRegionDistance(initialRegions[i], initialRegions[j]);
+  // Optimize region merging
+  const mergedRegions = [];
+  const used = new Set();
+
+  for (let i = 0; i < initialRegions.length; i++) {
+    if (used.has(i)) continue;
+    
+    let currentRegion = initialRegions[i];
+    used.add(i);
+
+    let merged;
+    do {
+      merged = false;
+      for (let j = 0; j < initialRegions.length; j++) {
+        if (used.has(j)) continue;
         
+        const distance = calculateRegionDistance(currentRegion, initialRegions[j]);
         if (distance <= groupingDistance) {
-          const mergedRegion = mergeRegions(initialRegions[i], initialRegions[j]);
-          initialRegions.splice(j, 1);
-          initialRegions[i] = mergedRegion;
+          currentRegion = mergeRegions(currentRegion, initialRegions[j]);
+          used.add(j);
           merged = true;
-          break;
         }
       }
-      if (merged) break;
-    }
+    } while (merged);
+
+    mergedRegions.push(currentRegion);
   }
 
-  // Convert regions to the format expected by the application
-  return initialRegions.map((region, index) => ({
+  // Return final regions
+  return mergedRegions.map((region, index) => ({
     id: index + 1,
     bounds: {
       x1: region.minX,
@@ -258,27 +329,13 @@ const App = () => {
   const pressedKeys = usePressedKeys();
   const [pencilSize, setPencilSize] = useState(3);
   const [isDrawing, setIsDrawing] = useState(false);
-
   const handleDetectRegions = () => {
     const canvas = document.getElementById("canvas");
     if (!canvas) return;
     
-    // Create a temporary canvas to draw all elements
-    const tempCanvas = document.createElement("canvas");
-    tempCanvas.width = canvas.width;
-    tempCanvas.height = canvas.height;
-    const tempCtx = tempCanvas.getContext("2d");
-    const roughCanvas = rough.canvas(tempCanvas);
-
-    // Draw all elements on temporary canvas
-    elements.forEach(element => {
-      drawElement(roughCanvas, tempCtx, element);
-    });
-
-    // Detect regions
-    const newRegions = detectRegions(tempCanvas);
+    const newRegions = detectRegions(canvas, elements, panOffset, scale, scaleOffset);
     setDrawingRegions(newRegions);
-
+  
     // Notify user
     if (newRegions.length > 0) {
       console.log(`Phát hiện ${newRegions.length} vùng vẽ!`);
@@ -335,7 +392,23 @@ const App = () => {
       document.removeEventListener("keydown", undoRedoFunction);
     };
   }, [undo, redo]);
-
+  useEffect(() => {
+    const panOrZoomFunction = event => {
+      if (pressedKeys.has("Meta") || pressedKeys.has("Control")) {
+        onZoom(event.deltaY * -0.01);
+      } else {
+        setPanOffset(prevState => ({
+          x: prevState.x - event.deltaX,
+          y: prevState.y - event.deltaY,
+        }));
+      }
+    };
+  
+    document.addEventListener("wheel", panOrZoomFunction);
+    return () => {
+      document.removeEventListener("wheel", panOrZoomFunction);
+    };
+  }, [pressedKeys]);
   const onZoom = delta => {
     setScale(prevState => Math.min(Math.max(prevState + delta, 0.1), 2));
   };
